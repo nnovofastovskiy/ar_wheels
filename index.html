@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ru">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Auto Wheel Painter — AI Prototype</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            height: 100%;
+            background: #111;
+            color: white;
+            font-family: sans-serif;
+        }
+
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 8px;
+            gap: 8px;
+            box-sizing: border-box;
+        }
+
+        video,
+        canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute;
+            inset: 0;
+            border-radius: 12px;
+        }
+
+        .viewer {
+            position: relative;
+            flex: 1;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #2563eb;
+            border: 0;
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: white;
+            cursor: pointer;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.18.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+    <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+</head>
+
+<body>
+    <div id="app">
+        <div class="controls">
+            <label>Цвет: <input id="color" type="color" value="#ff0000"></label>
+            <button id="detect">🔍 Распознать диски</button>
+            <button id="snapshot">📸 Сохранить снимок</button>
+            <div style="opacity:0.8;font-size:13px">Прицельтесь на автомобиль и нажмите «Распознать диски»</div>
+        </div>
+        <div class="viewer">
+            <video id="video" autoplay playsinline muted></video>
+            <canvas id="canvas"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let model, video, canvas, ctx;
+        let carBox = null, circles = [];
+
+        async function initCamera() {
+            video = document.getElementById('video');
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            video.srcObject = stream;
+            await new Promise(r => video.onloadedmetadata = r);
+        }
+
+        async function init() {
+            await initCamera();
+            canvas = document.getElementById('canvas');
+            ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            model = await cocoSsd.load();
+            console.log('✅ COCO-SSD model loaded');
+
+            requestAnimationFrame(drawLoop);
+        }
+
+        function drawLoop() {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = 'lime';
+            if (carBox) {
+                const { x, y, width, height } = carBox;
+                ctx.strokeRect(x, y, width, height);
+            }
+
+            // рисуем найденные круги
+            for (const c of circles) {
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+                ctx.strokeStyle = 'white';
+                ctx.stroke();
+                ctx.globalAlpha = 0.6;
+                ctx.fillStyle = document.getElementById('color').value;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+
+            requestAnimationFrame(drawLoop);
+        }
+
+        async function detectCarAndWheels() {
+            const predictions = await model.detect(video);
+            const car = predictions.find(p => p.class === 'car' && p.score > 0.5);
+            if (!car) {
+                alert('Машина не найдена — попробуй под другим углом');
+                return;
+            }
+            carBox = car.bbox ? { x: car.bbox[0], y: car.bbox[1], width: car.bbox[2], height: car.bbox[3] } : null;
+            console.log('Car bbox:', carBox);
+
+            // Извлекаем подизображение машины
+            const frame = new cv.Mat(canvas.height, canvas.width, cv.CV_8UC4);
+            const frameResized = new cv.Mat();
+            const cap = new cv.VideoCapture(video);
+            cap.read(frame);
+            const roi = frame.roi(new cv.Rect(carBox.x, carBox.y, carBox.width, carBox.height));
+
+            // Преобразуем в оттенки серого
+            let gray = new cv.Mat();
+            cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
+            cv.medianBlur(gray, gray, 5);
+
+            // Hough Circle Transform
+            let detected = new cv.Mat();
+            circles = [];
+            cv.HoughCircles(gray, detected, cv.HOUGH_GRADIENT, 1, gray.rows / 8, 100, 30, gray.rows / 10, gray.rows / 3);
+
+            for (let i = 0; i < detected.cols; ++i) {
+                let x = detected.data32F[i * 3];
+                let y = detected.data32F[i * 3 + 1];
+                let r = detected.data32F[i * 3 + 2];
+                circles.push({ x: x + carBox.x, y: y + carBox.y, r });
+            }
+
+            console.log('Found circles:', circles.length);
+
+            frame.delete(); frameResized.delete(); roi.delete(); gray.delete(); detected.delete();
+        }
+
+        document.getElementById('detect').addEventListener('click', detectCarAndWheels);
+
+        document.getElementById('snapshot').addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.download = 'wheel_color.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        });
+
+        // ждём загрузку OpenCV
+        window.Module = {
+            onRuntimeInitialized() { init(); }
+        };
+    </script>
+</body>
+
+</html>
