@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>YOLOv11 Segments + WASM — камера / файл</title>
+  <title>YOLOv11 + WASM — камера / файл / сегментация</title>
   <style>
     body {
       font-family: system-ui, sans-serif;
@@ -16,13 +16,28 @@
       padding: 1rem;
     }
     h1 { margin-bottom: .5rem }
-    video, canvas, img {
+
+    #viewer {
+      position: relative;
+      display: inline-block;
+      margin-top: .5rem;
+    }
+
+    #video, #overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 640px;
+      height: 480px;
       border-radius: 10px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-      margin-top: .5rem;
-      max-width: 90vw;
-      max-height: 70vh;
     }
+    #video { z-index: 1; }
+    #overlay {
+      z-index: 2;
+      pointer-events: none;
+    }
+
     #controls {
       margin-top: 10px;
       display: flex;
@@ -30,6 +45,7 @@
       flex-wrap: wrap;
       justify-content: center;
     }
+
     button, input[type=file] {
       background: #2563eb;
       color: #fff;
@@ -38,14 +54,19 @@
       padding: .5rem 1rem;
       cursor: pointer;
     }
-    #status { margin-top: .5rem; }
+
+    #status {
+      margin-top: .5rem;
+    }
   </style>
 </head>
 <body>
-  <h1>YOLOv11 + WASM — Сегментация с камеры или файла</h1>
+  <h1>YOLOv11 + WASM — Сегментация (камера или файл)</h1>
 
-  <video id="video" autoplay playsinline width="640" height="480" style="display:none"></video>
-  <canvas id="overlay" width="640" height="480"></canvas>
+  <div id="viewer">
+    <video id="video" autoplay playsinline width="640" height="480" style="display:none"></video>
+    <canvas id="overlay" width="640" height="480"></canvas>
+  </div>
 
   <div id="controls">
     <button id="startCam">Камера</button>
@@ -53,6 +74,7 @@
     <button id="stopBtn" disabled>Остановить</button>
     <button id="downloadBtn" style="display:none">Скачать результат</button>
   </div>
+
   <div id="status">Загрузка...</div>
 
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
@@ -60,6 +82,7 @@
   const MODEL_URL = './models/best.onnx';
   const CLASSES_URL = './models/classes.json';
   const MODEL_INPUT = 640;
+
   const video = document.getElementById('video');
   const overlay = document.getElementById('overlay');
   const ctx = overlay.getContext('2d');
@@ -73,46 +96,58 @@
   let stream = null;
   let rafId = null;
   let classes = [];
-  let processingFile = false;
 
   function status(t){ statusEl.textContent = t }
 
+  // === Предобработка кадра ===
   function preprocess(source) {
     const tmp = document.createElement('canvas');
     tmp.width = MODEL_INPUT; tmp.height = MODEL_INPUT;
     const tctx = tmp.getContext('2d');
     const vw = source.videoWidth || source.width;
     const vh = source.videoHeight || source.height;
-    const scale = Math.min(MODEL_INPUT/vw, MODEL_INPUT/vh);
+    const scale = Math.min(MODEL_INPUT / vw, MODEL_INPUT / vh);
     const sw = vw * scale, sh = vh * scale;
-    const dx = (MODEL_INPUT - sw)/2, dy = (MODEL_INPUT - sh)/2;
+    const dx = (MODEL_INPUT - sw) / 2, dy = (MODEL_INPUT - sh) / 2;
     tctx.fillStyle = "black";
-    tctx.fillRect(0,0,MODEL_INPUT,MODEL_INPUT);
+    tctx.fillRect(0, 0, MODEL_INPUT, MODEL_INPUT);
     tctx.drawImage(source, 0, 0, vw, vh, dx, dy, sw, sh);
-    const img = tctx.getImageData(0,0,MODEL_INPUT,MODEL_INPUT);
+
+    const img = tctx.getImageData(0, 0, MODEL_INPUT, MODEL_INPUT);
     const input = new Float32Array(3 * MODEL_INPUT * MODEL_INPUT);
-    for (let i=0; i<MODEL_INPUT*MODEL_INPUT; i++) {
-      input[i] = img.data[i*4]/255;
-      input[i+MODEL_INPUT*MODEL_INPUT] = img.data[i*4+1]/255;
-      input[i+2*MODEL_INPUT*MODEL_INPUT] = img.data[i*4+2]/255;
+    for (let i = 0; i < MODEL_INPUT * MODEL_INPUT; i++) {
+      input[i] = img.data[i * 4] / 255;
+      input[i + MODEL_INPUT * MODEL_INPUT] = img.data[i * 4 + 1] / 255;
+      input[i + 2 * MODEL_INPUT * MODEL_INPUT] = img.data[i * 4 + 2] / 255;
     }
-    return new ort.Tensor('float32', input, [1,3,MODEL_INPUT,MODEL_INPUT]);
+    return new ort.Tensor('float32', input, [1, 3, MODEL_INPUT, MODEL_INPUT]);
   }
 
-  function sigmoid(x){return 1/(1+Math.exp(-x));}
-  function iou(a,b){const x1=Math.max(a.x1,b.x1),y1=Math.max(a.y1,b.y1),
-    x2=Math.min(a.x2,b.x2),y2=Math.min(a.y2,b.y2);
+  function sigmoid(x){ return 1 / (1 + Math.exp(-x)); }
+  function iou(a,b){
+    const x1=Math.max(a.x1,b.x1),y1=Math.max(a.y1,b.y1),
+          x2=Math.min(a.x2,b.x2),y2=Math.min(a.y2,b.y2);
     const w=Math.max(0,x2-x1),h=Math.max(0,y2-y1);
     const inter=w*h,areaA=(a.x2-a.x1)*(a.y2-a.y1),areaB=(b.x2-b.x1)*(b.y2-b.y1);
-    return inter/(areaA+areaB-inter+1e-6);}
-  function nms(boxes,scores,t=0.45){const idxs=scores.map((s,i)=>({s,i})).sort((a,b)=>b.s-a.s).map(x=>x.i);
-    const keep=[];while(idxs.length){const i=idxs.shift();keep.push(i);
-    for(let j=idxs.length-1;j>=0;j--) if(iou(boxes[i],boxes[idxs[j]])>t) idxs.splice(j,1);}return keep;}
+    return inter/(areaA+areaB-inter+1e-6);
+  }
+  function nms(boxes,scores,t=0.45){
+    const idxs=scores.map((s,i)=>({s,i})).sort((a,b)=>b.s-a.s).map(x=>x.i);
+    const keep=[];
+    while(idxs.length){
+      const i=idxs.shift();
+      keep.push(i);
+      for(let j=idxs.length-1;j>=0;j--){
+        if(iou(boxes[i],boxes[idxs[j]])>t) idxs.splice(j,1);
+      }
+    }
+    return keep;
+  }
 
   function buildMask(proto, coeffs, mask_h, mask_w) {
     const mask = new Float32Array(mask_h * mask_w);
-    for (let i=0;i<coeffs.length;i++){
-      const ch=proto.slice(i*mask_h*mask_w,(i+1)*mask_h*mask_w);
+    for (let i=0; i<coeffs.length; i++){
+      const ch=proto.slice(i*mask_h*mask_w, (i+1)*mask_h*mask_w);
       for(let j=0;j<mask.length;j++) mask[j]+=ch[j]*coeffs[i];
     }
     for(let i=0;i<mask.length;i++) mask[i]=sigmoid(mask[i]);
@@ -129,7 +164,7 @@
       img.data[i*4+3]=v;
     }
     const m=document.createElement('canvas');
-    m.width=mask_w;m.height=mask_h;
+    m.width=mask_w; m.height=mask_h;
     const mctx=m.getContext('2d');
     mctx.putImageData(img,0,0);
     ctx.globalAlpha=0.4;
@@ -152,7 +187,9 @@
       const cx=data[off],cy=data[off+1],w=data[off+2],h=data[off+3];
       const conf=data[off+4];
       let best=-1,score=0;
-      for(let c=5;c<dim-mask_dim;c++){if(data[off+c]>score){score=data[off+c];best=c-5;}}
+      for(let c=5;c<dim-mask_dim;c++){
+        if(data[off+c]>score){score=data[off+c];best=c-5;}
+      }
       const final=conf*score;
       if(final<0.4) continue;
       boxes.push({x1:(cx-w/2)*overlay.width,y1:(cy-h/2)*overlay.height,
@@ -184,16 +221,22 @@
 
   async function startCamera(){
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
-    video.srcObject=stream;video.style.display='block';
+    video.srcObject=stream;
+    video.style.display='block';
     await video.play();
-    overlay.width=video.videoWidth;overlay.height=video.videoHeight;
-    startCam.disabled=true;stopBtn.disabled=false;status('Камера запущена');
+    overlay.width=video.videoWidth;
+    overlay.height=video.videoHeight;
+    startCam.disabled=true;
+    stopBtn.disabled=false;
+    status('Камера запущена');
     rafId=requestAnimationFrame(inferLoop);
   }
+
   function stopAll(){
     if(stream)stream.getTracks().forEach(t=>t.stop());
     if(rafId)cancelAnimationFrame(rafId);
-    startCam.disabled=false;stopBtn.disabled=true;
+    startCam.disabled=false;
+    stopBtn.disabled=true;
     status('Остановлено');
   }
 
@@ -201,47 +244,13 @@
     const file=e.target.files[0];
     if(!file)return;
     stopAll();
-    processingFile=true;
     const url=URL.createObjectURL(file);
     const isVideo=file.type.startsWith('video');
     status('Обработка...');
     if(isVideo){
       const v=document.createElement('video');
-      v.src=url;await v.play();
-      overlay.width=v.videoWidth;overlay.height=v.videoHeight;
-      for(let i=0;i<v.duration;i+=1){
-        await new Promise(res=>setTimeout(res,1000));
-        await runInference(v);
-      }
-      v.pause();
-    } else {
-      const img=new Image();
-      img.src=url;await new Promise(r=>img.onload=r);
-      overlay.width=img.width;overlay.height=img.height;
-      await runInference(img);
-    }
-    status('Готово!');
-    downloadBtn.style.display='inline-block';
-    processingFile=false;
-  }
-
-  downloadBtn.onclick=()=>{
-    const link=document.createElement('a');
-    link.download='result.png';
-    link.href=overlay.toDataURL('image/png');
-    link.click();
-  };
-
-  async function initOrt(){
-    session=await ort.InferenceSession.create(MODEL_URL,{executionProviders:['wasm']});
-    const r=await fetch(CLASSES_URL);classes=await r.json();
-    status('Готово — выберите источник');
-  }
-
-  startCam.onclick=startCamera;
-  stopBtn.onclick=stopAll;
-  fileInput.onchange=handleFile;
-  window.onload=initOrt;
-  </script>
-</body>
-</html>
+      v.src=url;
+      await v.play();
+      overlay.width=v.videoWidth;
+      overlay.height=v.videoHeight;
+      await runInference(v);
