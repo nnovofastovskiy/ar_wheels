@@ -1,426 +1,250 @@
 <!doctype html>
 <html lang="ru">
-
 <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>YOLOv11 (WASM) — Распознавание автомобилей в браузере</title>
-    <style>
-        body {
-            font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial;
-            margin: 0;
-            background: #0f172a;
-            color: #e6eef8;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 12px;
-            padding: 16px
-        }
-
-        #container {
-            display: flex;
-            gap: 12px;
-            align-items: flex-start
-        }
-
-        video,
-        canvas {
-            border-radius: 8px;
-            box-shadow: 0 8px 24px rgba(2, 6, 23, .6)
-        }
-
-        #controls {
-            display: flex;
-            flex-direction: column;
-            gap: 8px
-        }
-
-        button {
-            padding: 8px 12px;
-            border-radius: 8px;
-            border: 0;
-            background: #2563eb;
-            color: white;
-            cursor: pointer
-        }
-
-        .label {
-            background: rgba(37, 99, 235, .9);
-            padding: 4px 8px;
-            border-radius: 6px;
-            font-weight: 600
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>YOLOv11 Segments (WASM) — сегментация объектов</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0;
+      padding: 1rem;
+    }
+    h1 { margin-bottom: .5rem }
+    video, canvas {
+      border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    }
+    #controls {
+      margin-top: 10px;
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: .5rem 1rem;
+      cursor: pointer;
+    }
+  </style>
 </head>
-
 <body>
-    <h1>YOLOv11 + WASM — детекция автомобилей (в браузере)</h1>
-    <div id="container">
-        <div>
-            <video id="video" autoplay playsinline width="640" height="480"></video>
-            <canvas id="overlay" width="640" height="480" style="position:relative;top:-480px;left:0"></canvas>
-        </div>
-        <div id="controls">
-            <div class="label">Статус: <span id="status">Инициализация...</span></div>
-            <button id="startBtn">Запустить камеру</button>
-            <button id="stopBtn" disabled>Остановить</button>
-            <label>
-                Порог детекции: <input id="conf" type="range" min="0" max="1" step="0.01" value="0.4" /> <span
-                    id="confVal">0.40</span>
-            </label>
-            <label>
-                IoU для NMS: <input id="iou" type="range" min="0" max="1" step="0.01" value="0.45" /> <span
-                    id="iouVal">0.45</span>
-            </label>
-            <div style="max-width:240px;font-size:13px;line-height:1.3">
-                Инструкция:
-                <ol>
-                    <li>Положите ONNX-модель YOLOv11 в <code>/models/yolov11.onnx</code> (см. описания ниже).</li>
-                    <li>Создайте файл <code>/models/classes.json</code> с названиями классов (массив строк, например:
-                        ["car","truck",...] ).</li>
-                    <li>Запустите этот HTML в локальном сервере (fetch ONNX из filesystem требует HTTP/HTTPS).</li>
-                </ol>
-            </div>
-        </div>
-    </div>
+  <h1>YOLOv11 + WASM — сегментация объектов</h1>
 
-    <!-- ONNX Runtime Web (WASM backend) -->
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <video id="video" autoplay playsinline width="640" height="480"></video>
+  <canvas id="overlay" width="640" height="480"></canvas>
 
-    <script>
-        // ------------------------------------------
-        // НАСТРОЙКИ
-        // ------------------------------------------
-        const MODEL_URL = './models/best.onnx' // поменяйте путь если нужно
-        const CLASSES_URL = './models/classes.json'
-        const MODEL_INPUT_SIZE = 640 // предполагаемый размер модели (640x640). Подстраивайте под вашу модель.
-        const TARGET_CLASSES = null // null = все классы; или ['car'] чтобы фильтровать
+  <div id="controls">
+    <button id="startBtn">Запустить камеру</button>
+    <button id="stopBtn" disabled>Остановить</button>
+    <span id="status">Инициализация...</span>
+  </div>
 
-        // ------------------------------------------
-        // Глобальные элементы
-        // ------------------------------------------
-        const video = document.getElementById('video')
-        const overlay = document.getElementById('overlay')
-        const ctx = overlay.getContext('2d')
-        const statusEl = document.getElementById('status')
-        const startBtn = document.getElementById('startBtn')
-        const stopBtn = document.getElementById('stopBtn')
-        const confRange = document.getElementById('conf')
-        const confVal = document.getElementById('confVal')
-        const iouRange = document.getElementById('iou')
-        const iouVal = document.getElementById('iouVal')
+  <!-- ONNX Runtime Web -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 
-        confRange.addEventListener('input', () => confVal.textContent = Number(confRange.value).toFixed(2))
-        iouRange.addEventListener('input', () => iouVal.textContent = Number(iouRange.value).toFixed(2))
+  <script>
+  const MODEL_URL = './models/best.onnx';
+  const CLASSES_URL = './models/classes.json';
+  const MODEL_INPUT = 640;
 
-        let stream = null
-        let rafId = null
-        let session = null
-        let classes = []
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const ctx = overlay.getContext('2d');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const statusEl = document.getElementById('status');
 
-        // ------------------------------------------
-        // Инициализация ONNX Runtime с WASM
-        // ------------------------------------------
-        async function initOrt() {
-            status('Инициализация WASM-движка ONNXRuntime...')
-            // Указываем backend 'wasm'
-            await ort.env.wasm.wasmPaths && null // no-op if not provided
-            // create session with wasm execution provider
-            ort.env.wasm.wasmPaths = ort.env.wasm.wasmPaths || 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/'
-            const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' }
-            session = await ort.InferenceSession.create(MODEL_URL, opts)
-            status('Модель загружена')
+  let session = null;
+  let stream = null;
+  let rafId = null;
+  let classes = [];
+
+  function status(t){ statusEl.textContent = t }
+
+  // === Предобработка ===
+  function preprocess(video) {
+    const tmp = document.createElement('canvas');
+    tmp.width = MODEL_INPUT; tmp.height = MODEL_INPUT;
+    const tctx = tmp.getContext('2d');
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const scale = Math.min(MODEL_INPUT/vw, MODEL_INPUT/vh);
+    const sw = vw * scale, sh = vh * scale;
+    const dx = (MODEL_INPUT - sw)/2, dy = (MODEL_INPUT - sh)/2;
+    tctx.fillStyle = "black";
+    tctx.fillRect(0,0,MODEL_INPUT,MODEL_INPUT);
+    tctx.drawImage(video, 0, 0, vw, vh, dx, dy, sw, sh);
+    const img = tctx.getImageData(0,0,MODEL_INPUT,MODEL_INPUT);
+    const { data } = img;
+    const input = new Float32Array(3 * MODEL_INPUT * MODEL_INPUT);
+    for (let i=0; i<MODEL_INPUT*MODEL_INPUT; i++) {
+      input[i] = data[i*4]/255;
+      input[i+MODEL_INPUT*MODEL_INPUT] = data[i*4+1]/255;
+      input[i+2*MODEL_INPUT*MODEL_INPUT] = data[i*4+2]/255;
+    }
+    return new ort.Tensor('float32', input, [1,3,MODEL_INPUT,MODEL_INPUT]);
+  }
+
+  // === Постобработка масок ===
+  function sigmoid(x){return 1/(1+Math.exp(-x));}
+  function iou(a,b){
+    const x1=Math.max(a.x1,b.x1),y1=Math.max(a.y1,b.y1),
+          x2=Math.min(a.x2,b.x2),y2=Math.min(a.y2,b.y2);
+    const w=Math.max(0,x2-x1),h=Math.max(0,y2-y1);
+    const inter=w*h,areaA=(a.x2-a.x1)*(a.y2-a.y1),areaB=(b.x2-b.x1)*(b.y2-b.y1);
+    return inter/(areaA+areaB-inter+1e-6);
+  }
+  function nonMaxSuppression(boxes,scores,thr=0.45){
+    const idxs=scores.map((s,i)=>({s,i})).sort((a,b)=>b.s-a.s).map(x=>x.i);
+    const keep=[];
+    while(idxs.length){
+      const i=idxs.shift();
+      keep.push(i);
+      for(let j=idxs.length-1;j>=0;j--){
+        if(iou(boxes[i],boxes[idxs[j]])>thr) idxs.splice(j,1);
+      }
+    }
+    return keep;
+  }
+
+  function buildMask(proto, coeffs, mask_h, mask_w) {
+    const dim = coeffs.length;
+    const mask = new Float32Array(mask_h * mask_w);
+    for (let i = 0; i < dim; i++) {
+      const channel = proto.slice(i * mask_h * mask_w, (i + 1) * mask_h * mask_w);
+      for (let j = 0; j < mask.length; j++) {
+        mask[j] += channel[j] * coeffs[i];
+      }
+    }
+    for (let i = 0; i < mask.length; i++) mask[i] = sigmoid(mask[i]);
+    return mask;
+  }
+
+  function drawMask(mask, mask_h, mask_w, box, color) {
+    const img = ctx.createImageData(mask_w, mask_h);
+    for (let i = 0; i < mask.length; i++) {
+      const v = mask[i] > 0.5 ? 255 : 0;
+      img.data[i*4+0] = color[0];
+      img.data[i*4+1] = color[1];
+      img.data[i*4+2] = color[2];
+      img.data[i*4+3] = v;
+    }
+    const mcanvas = document.createElement('canvas');
+    mcanvas.width = mask_w; mcanvas.height = mask_h;
+    const mctx = mcanvas.getContext('2d');
+    mctx.putImageData(img, 0, 0);
+    ctx.globalAlpha = 0.4;
+    ctx.drawImage(mcanvas, box.x1, box.y1, box.x2-box.x1, box.y2-box.y1);
+    ctx.globalAlpha = 1.0;
+  }
+
+  // === Главный цикл инференса ===
+  async function inferLoop(){
+    if(!video || video.readyState < 2){ rafId = requestAnimationFrame(inferLoop); return; }
+    const tensor = preprocess(video);
+    const feeds = { [session.inputNames[0]]: tensor };
+    try {
+      const out = await session.run(feeds);
+      const detOut = out[session.outputNames[0]];
+      const protoOut = out[session.outputNames[1]]; // для сегментации
+      const data = detOut.data;
+      const [batch, num, dim] = detOut.dims;
+      const mask_dim = protoOut.dims[1];
+      const mask_h = protoOut.dims[2];
+      const mask_w = protoOut.dims[3];
+      const boxes=[],scores=[],clsIdx=[],coeffsAll=[];
+
+      for(let i=0;i<num;i++){
+        const off=i*dim;
+        const cx=data[off],cy=data[off+1],w=data[off+2],h=data[off+3];
+        const conf=data[off+4];
+        let bestClass=-1,bestScore=0;
+        for(let c=5;c<dim-mask_dim;c++){
+          if(data[off+c]>bestScore){bestScore=data[off+c];bestClass=c-5;}
         }
+        const score=conf*bestScore;
+        if(score<0.4) continue;
+        boxes.push({x1:(cx-w/2)*overlay.width,y1:(cy-h/2)*overlay.height,
+                    x2:(cx+w/2)*overlay.width,y2:(cy+h/2)*overlay.height});
+        scores.push(score);
+        clsIdx.push(bestClass);
+        coeffsAll.push(data.slice(off+dim-mask_dim,off+dim));
+      }
+      const keep=nonMaxSuppression(boxes,scores);
+      ctx.clearRect(0,0,overlay.width,overlay.height);
 
-        function status(text) { statusEl.textContent = text }
+      for(const i of keep){
+        const b=boxes[i];
+        const color=[0,255,0];
+        ctx.strokeStyle='lime';
+        ctx.lineWidth=2;
+        ctx.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1);
+        const mask=buildMask(protoOut.data,coeffsAll[i],mask_h,mask_w);
+        drawMask(mask,mask_h,mask_w,b,color);
+        const label=`${classes[clsIdx[i]]||clsIdx[i]} ${(scores[i]*100).toFixed(1)}%`;
+        ctx.fillStyle='rgba(0,0,0,0.6)';
+        ctx.fillRect(b.x1,b.y1-20,ctx.measureText(label).width+6,20);
+        ctx.fillStyle='#fff';
+        ctx.fillText(label,b.x1+3,b.y1-17);
+      }
+    } catch(e){
+      console.error(e);
+      status('Ошибка инференса');
+    }
+    rafId = requestAnimationFrame(inferLoop);
+  }
 
-        // ------------------------------------------
-        // Вспомогательные: NMS и преобразования
-        // ------------------------------------------
-        function sigmoid(x) { return 1 / (1 + Math.exp(-x)) }
+  // === Камера ===
+  async function startCamera(){
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+      video.srcObject=stream;
+      await video.play();
+      overlay.width=video.videoWidth;
+      overlay.height=video.videoHeight;
+      status('Камера запущена');
+      startBtn.disabled=true; stopBtn.disabled=false;
+      rafId=requestAnimationFrame(inferLoop);
+    }catch(e){status('Ошибка камеры'); console.error(e);}
+  }
+  function stopCamera(){
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    if(rafId) cancelAnimationFrame(rafId);
+    startBtn.disabled=false; stopBtn.disabled=true;
+    status('Остановлено');
+  }
 
-        // Простейшая реализация NMS (IoU в pixel coords)
-        function iou(a, b) {
-            const x1 = Math.max(a.x1, b.x1)
-            const y1 = Math.max(a.y1, b.y1)
-            const x2 = Math.min(a.x2, b.x2)
-            const y2 = Math.min(a.y2, b.y2)
-            const w = Math.max(0, x2 - x1)
-            const h = Math.max(0, y2 - y1)
-            const inter = w * h
-            const areaA = (a.x2 - a.x1) * (a.y2 - a.y1)
-            const areaB = (b.x2 - b.x1) * (b.y2 - b.y1)
-            return inter / (areaA + areaB - inter + 1e-6)
-        }
+  // === Инициализация ===
+  async function initOrt(){
+    status('Загрузка модели...');
+    session = await ort.InferenceSession.create(MODEL_URL, { executionProviders:['wasm'] });
+    status('Модель загружена');
+  }
+  async function loadClasses(){
+    try{
+      const r=await fetch(CLASSES_URL);
+      classes=await r.json();
+    }catch{classes=[];}
+  }
 
-        function nonMaxSuppression(boxes, scores, iouThreshold = 0.45) {
-            const idxs = scores.map((s, i) => ({ s, i })).sort((a, b) => b.s - a.s).map(x => x.i)
-            const keep = []
-            while (idxs.length) {
-                const i = idxs.shift()
-                keep.push(i)
-                for (let j = idxs.length - 1; j >= 0; j--) {
-                    if (iou(boxes[i], boxes[idxs[j]]) > iouThreshold) idxs.splice(j, 1)
-                }
-            }
-            return keep
-        }
+  (async()=>{
+    await loadClasses();
+    await initOrt();
+    status('Готово — нажмите «Запустить камеру»');
+  })();
 
-        // ------------------------------------------
-        // Предобработка кадра -> tensor
-        // ------------------------------------------
-        function preprocess(canvas) {
-            // canvas: square MODEL_INPUT_SIZE x MODEL_INPUT_SIZE
-            const ctx = canvas.getContext('2d')
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-            const { data } = imgData
-            // ONNX Runtime expects Float32Array in NCHW with normalization [0..1]
-            const channels = 3
-            const size = canvas.width * canvas.height
-            const input = new Float32Array(1 * channels * size)
-            // convert to RGB, normalize to [0,1]
-            for (let i = 0; i < size; i++) {
-                const r = data[i * 4] / 255
-                const g = data[i * 4 + 1] / 255
-                const b = data[i * 4 + 2] / 255
-                input[i] = r
-                input[i + size] = g
-                input[i + size * 2] = b
-            }
-            const tensor = new ort.Tensor('float32', input, [1, 3, canvas.height, canvas.width])
-            return tensor
-        }
-
-        // ------------------------------------------
-        // Постобработка — предполагаем типичный вывод YOLO: [1, N, 5+num_classes]
-        // ПРИМЕЧАНИЕ: Подстроите под конкретную структуру вашей yolov11.onnx!
-        // ------------------------------------------
-        function postprocess(outputData, origWidth, origHeight, confThreshold) {
-            // outputData: Float32Array or array-like
-            // предполагаем: output shape [1, num_detections, 5+num_classes]
-            // найдем число колонок: (5+num_classes)
-            const arr = outputData
-            // Для универсальности пытаемся определить stride: ищем firstDimension
-            // Здесь мы полагаемся на то, что session.outputNames[0] даёт плоский Float32Array.
-
-            // Если output приходит как object с dims, data, поддержите оба варианта
-            let data, dims
-            if (arr.data && arr.dims) { data = arr.data; dims = arr.dims }
-            else if (Array.isArray(arr)) {
-                // если передали массив — попробуем infer размеры (fallback)
-                data = Float32Array.from(arr)
-                // предупреждение: без dims нельзя точно восстановить структуру
-                // предполагаем dims = [1, N, D]
-                dims = null
-            } else if (arr instanceof Float32Array) { data = arr; dims = null }
-            else { data = Float32Array.from(arr); dims = null }
-
-            // Попробуем получить число колонок (D). Если session возвращает shape metadata, используйте его.
-            // Fallback: если длина данных делится на 3*MODEL_INPUT_SIZE*MODEL_INPUT_SIZE — невозможно определить, но
-            // в большинстве моделей выводится Nx(M) где M>=6.
-
-            // Для удобства: попробуем считать, что dims == [1, N, M]
-            let N = null, M = null
-            if (dims && dims.length === 3) { N = dims[1]; M = dims[2] }
-            else if (dims && dims.length === 2) { N = dims[0]; M = dims[1] }
-            else {
-                // грубая эвристика: M = 85 (80 classes + 5) или 6+num_classes
-                // если длина данных % 85 == 0 -> M=85
-                if (data.length % 85 === 0) { M = 85; N = data.length / M }
-                else if (data.length % 7 === 0) { M = 7; N = data.length / M }
-                else { // as last resort, assume M=85
-                    M = 85; N = Math.floor(data.length / M)
-                }
-            }
-
-            const boxes = []
-            const scores = []
-            const classesIdx = []
-
-            for (let i = 0; i < N; i++) {
-                const offset = i * M
-                const cx = data[offset + 0]
-                const cy = data[offset + 1]
-                const w = data[offset + 2]
-                const h = data[offset + 3]
-                const obj = data[offset + 4]
-                // class scores
-                let bestClass = -1
-                let bestClassScore = 0
-                for (let c = 5; c < M; c++) {
-                    const sc = data[offset + c]
-                    if (sc > bestClassScore) { bestClassScore = sc; bestClass = c - 5 }
-                }
-                const score = obj * bestClassScore
-                if (score < confThreshold) continue
-                // convert center x,y,w,h normalized (0..1) to pixel coords on original frame
-                const x1 = (cx - w / 2) * origWidth
-                const y1 = (cy - h / 2) * origHeight
-                const x2 = (cx + w / 2) * origWidth
-                const y2 = (cy + h / 2) * origHeight
-                boxes.push({ x1, y1, x2, y2 })
-                scores.push(score)
-                classesIdx.push(bestClass)
-            }
-
-            const keep = nonMaxSuppression(boxes, scores, parseFloat(iouRange.value))
-            const results = keep.map(i => ({ box: boxes[i], score: scores[i], classIdx: classesIdx[i] }))
-
-            return results
-        }
-
-        // ------------------------------------------
-        // Главный цикл инференса
-        // ------------------------------------------
-        async function inferLoop() {
-            if (!video || video.readyState < 2) { rafId = requestAnimationFrame(inferLoop); return }
-            // подготовить квадратный canvas для модели
-            const modelSize = MODEL_INPUT_SIZE
-            const tmp = document.createElement('canvas')
-            tmp.width = modelSize; tmp.height = modelSize
-            const tctx = tmp.getContext('2d')
-            // рисуем видео центровкой и letterbox
-            const vw = video.videoWidth, vh = video.videoHeight
-            const scale = Math.min(modelSize / vw, modelSize / vh)
-            const sw = vw * scale, sh = vh * scale
-            const dx = (modelSize - sw) / 2, dy = (modelSize - sh) / 2
-            tctx.fillStyle = 'black'
-            tctx.fillRect(0, 0, modelSize, modelSize)
-            tctx.drawImage(video, 0, 0, vw, vh, dx, dy, sw, sh)
-
-            // предобработка
-            const tensor = preprocess(tmp)
-            const inputName = session.inputNames[0]
-            const feeds = {}
-            feeds[inputName] = tensor
-            try {
-                const out = await session.run(feeds)
-                // берем первый выход
-                const outName = session.outputNames[0]
-                const output = out[outName]
-                // преобразуем обратно к размерам видео (учитываем letterbox)
-                // поэтому передадим origWidth/origHeight в нормализованных координатах — нам нужно привести bbox к размерам video
-                // потому в postprocess мы умножаем на origWidth/origHeight, где у нас orig = (video.width / sw)???
-
-                // !!! Важно: мы рисуем в tmp в letterbox режиме, поэтому координаты модели от 0..1 относятся к tmp canvas.
-                // Чтобы привести к координатам video, сделаем scaleBack
-                const results = postprocess(output, modelSize, modelSize, parseFloat(confRange.value))
-
-                // Преобразуем результаты из modelSize-ксил в реальные координаты окна video
-                // Помним, что мы вписали видео в tmp с offset dx,dy и размером sw,sh
-                const vw_ratio = (video.videoWidth * (Math.min(modelSize / video.videoWidth, modelSize / video.videoHeight))) / modelSize
-                // Более прямой способ: применим обратную трансформацию, зная dx,dy,sw,sh
-                // Получаем transform: modelCoord -> videoCoord:
-                // x_video = (x_model - dx) * (vw/sw)
-                const sx = video.videoWidth / sw
-                const sy = video.videoHeight / sh
-
-                // очистим overlay
-                ctx.clearRect(0, 0, overlay.width, overlay.height)
-                ctx.font = '18px sans-serif'
-                ctx.textBaseline = 'top'
-
-                for (const r of results) {
-                    // box currently in model canvas coordinates (0..modelSize)
-                    const b = r.box
-                    // shift by -dx/dy and scale to video pixels
-                    const x1 = (b.x1 - dx) * sx
-                    const y1 = (b.y1 - dy) * sy
-                    const x2 = (b.x2 - dx) * sx
-                    const y2 = (b.y2 - dy) * sy
-                    // clamp
-                    const X1 = Math.max(0, x1), Y1 = Math.max(0, y1)
-                    const X2 = Math.min(video.videoWidth, x2), Y2 = Math.min(video.videoHeight, y2)
-
-                    const clsIdx = r.classIdx
-                    const clsName = classes[clsIdx] || clsIdx
-                    if (TARGET_CLASSES && !TARGET_CLASSES.includes(clsName)) continue
-
-                    // рисуем
-                    ctx.strokeStyle = '#00ff88'
-                    ctx.lineWidth = 3
-                    ctx.strokeRect(X1, Y1, X2 - X1, Y2 - Y1)
-                    const label = `${clsName} ${(r.score * 100).toFixed(1)}%`
-                    const textW = ctx.measureText(label).width + 8
-                    ctx.fillStyle = 'rgba(0,0,0,0.6)'
-                    ctx.fillRect(X1, Y1, textW, 22)
-                    ctx.fillStyle = '#fff'
-                    ctx.fillText(label, X1 + 4, Y1 + 2)
-                }
-
-            } catch (e) {
-                console.error('Ошибка во время inference:', e)
-                status('Ошибка inference — см. консоль')
-            }
-
-            rafId = requestAnimationFrame(inferLoop)
-        }
-
-        // ------------------------------------------
-        // Камера
-        // ------------------------------------------
-        async function startCamera() {
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
-                video.srcObject = stream
-                await video.play()
-                overlay.width = video.videoWidth
-                overlay.height = video.videoHeight
-                status('Камера запущена')
-                startBtn.disabled = true; stopBtn.disabled = false
-                rafId = requestAnimationFrame(inferLoop)
-            } catch (e) {
-                console.error(e)
-                status('Не удалось получить доступ к камере: ' + e.message)
-            }
-        }
-
-        function stopCamera() {
-            if (stream) {
-                stream.getTracks().forEach(t => t.stop())
-                stream = null
-            }
-            if (rafId) cancelAnimationFrame(rafId)
-            startBtn.disabled = false; stopBtn.disabled = true
-            status('Остановлено')
-        }
-
-        // ------------------------------------------
-        // Загрузка классов
-        // ------------------------------------------
-        async function loadClasses() {
-            try {
-                const r = await fetch(CLASSES_URL)
-                classes = await r.json()
-                status('Классы загружены: ' + classes.join(', '))
-            } catch (e) {
-                console.warn('Не удалось загрузить classes.json. Классы будут индекcами.', e)
-                classes = []
-            }
-        }
-
-        // ------------------------------------------
-        // Boot
-        // ------------------------------------------
-        (async () => {
-            try {
-                await loadClasses()
-                await initOrt()
-                status('Готов — загрузите камеру')
-            } catch (e) {
-                console.error(e)
-                status('Ошибка инициализации: ' + e.message)
-            }
-        })()
-
-        // события UI
-        startBtn.addEventListener('click', startCamera)
-        stopBtn.addEventListener('click', stopCamera)
-
-        // авто-останов при закрытии вкладки
-        window.addEventListener('beforeunload', () => { if (stream) stream.getTracks().forEach(t => t.stop()) })
-    </script>
+  startBtn.addEventListener('click', startCamera);
+  stopBtn.addEventListener('click', stopCamera);
+  window.addEventListener('beforeunload', ()=>{if(stream)stream.getTracks().forEach(t=>t.stop());});
+  </script>
 </body>
-
 </html>
