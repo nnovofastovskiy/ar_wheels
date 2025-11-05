@@ -21,7 +21,7 @@
     <input id="file" type="file" accept="image/*" />
     <label class="chip">Модель:
       <select id="modelSelect">
-        <option value="yolo11-seg.onnx">yolo11-seg.onnx</option>
+        <option value="yolo11n-seg.onnx">yolo11n-seg.onnx</option>
       </select>
     </label>
     <button id="runBtn" disabled>Запустить</button>
@@ -39,7 +39,7 @@
 
   <script>
   // ========== Настройки, поменяйте под вашу модель ===========
-  const MODEL_FILENAME_DEFAULT = 'yolo11-seg.onnx'; // поместите модель рядом с index.html
+  const MODEL_FILENAME_DEFAULT = 'yolo11n-seg.onnx'; // поместите модель рядом с index.html
   // Укажите классы (названия частей автомобиля) в порядке индексов модели
   // Например: 0: hood, 1: bumper, 2: wheel, etc. Замените на ваши.
   const CLASSES = [
