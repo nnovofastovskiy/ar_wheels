@@ -3,254 +3,446 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>YOLOv11 + WASM — камера / файл / сегментация</title>
+  <title>YOLO11-seg (WASM) — распознавание частей автомобиля</title>
   <style>
-    body {
-      font-family: system-ui, sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      margin: 0;
-      padding: 1rem;
-    }
-    h1 { margin-bottom: .5rem }
-
-    #viewer {
-      position: relative;
-      display: inline-block;
-      margin-top: .5rem;
-    }
-
-    #video, #overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 640px;
-      height: 480px;
-      border-radius: 10px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-    }
-    #video { z-index: 1; }
-    #overlay {
-      z-index: 2;
-      pointer-events: none;
-    }
-
-    #controls {
-      margin-top: 10px;
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-      justify-content: center;
-    }
-
-    button, input[type=file] {
-      background: #2563eb;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: .5rem 1rem;
-      cursor: pointer;
-    }
-
-    #status {
-      margin-top: .5rem;
-    }
+    body { font-family: system-ui, -apple-system, Roboto, "Segoe UI", Arial; padding: 18px; max-width: 920px; margin: auto; }
+    h1 { font-size: 20px; margin-bottom: 6px; }
+    #controls { display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+    canvas { border:1px solid #ddd; max-width:100%; height:auto; }
+    .overlay { position:relative; display:inline-block; }
+    #log { margin-top:10px; color:#444; font-size:13px; }
+    .chip { background:#eee; padding:6px 10px; border-radius:10px; font-size:13px; }
   </style>
 </head>
 <body>
-  <h1>YOLOv11 + WASM — Сегментация (камера или файл)</h1>
-
-  <div id="viewer">
-    <video id="video" autoplay playsinline width="640" height="480" style="display:none"></video>
-    <canvas id="overlay" width="640" height="480"></canvas>
-  </div>
+  <h1>YOLO11-seg (WASM) — распознавание частей автомобиля</h1>
 
   <div id="controls">
-    <button id="startCam">Камера</button>
-    <input id="fileInput" type="file" accept="image/*,video/*" />
-    <button id="stopBtn" disabled>Остановить</button>
-    <button id="downloadBtn" style="display:none">Скачать результат</button>
+    <input id="file" type="file" accept="image/*" />
+    <label class="chip">Модель:
+      <select id="modelSelect">
+        <option value="yolo11-seg.onnx">yolo11-seg.onnx</option>
+      </select>
+    </label>
+    <button id="runBtn" disabled>Запустить</button>
+    <span id="status" class="chip">Загрузка модели...</span>
   </div>
 
-  <div id="status">Загрузка...</div>
+  <div class="overlay">
+    <canvas id="displayCanvas"></canvas>
+  </div>
 
+  <div id="log"></div>
+
+  <!-- onnxruntime-web (ORT) -->
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
-  <script>
-  const MODEL_URL = './models/best.onnx';
-  const CLASSES_URL = './models/classes.json';
-  const MODEL_INPUT = 640;
 
-  const video = document.getElementById('video');
-  const overlay = document.getElementById('overlay');
-  const ctx = overlay.getContext('2d');
-  const startCam = document.getElementById('startCam');
-  const fileInput = document.getElementById('fileInput');
-  const stopBtn = document.getElementById('stopBtn');
-  const downloadBtn = document.getElementById('downloadBtn');
+  <script>
+  // ========== Настройки, поменяйте под вашу модель ===========
+  const MODEL_FILENAME_DEFAULT = 'yolo11-seg.onnx'; // поместите модель рядом с index.html
+  // Укажите классы (названия частей автомобиля) в порядке индексов модели
+  // Например: 0: hood, 1: bumper, 2: wheel, etc. Замените на ваши.
+  const CLASSES = [
+    "hood","front_bumper","rear_bumper","left_front_wheel","right_front_wheel",
+    "left_rear_wheel","right_rear_wheel","door_left","door_right","roof","trunk"
+  ];
+
+  const INPUT_SIZE = 640; // предполагаемый вход модели (если динамический, можно адаптировать)
+  const SCORE_THRESH = 0.35;
+  const NMS_IOU = 0.45;
+
+  // ========== Конец настроек ===============================
+
+  const fileInput = document.getElementById('file');
+  const runBtn = document.getElementById('runBtn');
   const statusEl = document.getElementById('status');
+  const canvas = document.getElementById('displayCanvas');
+  const ctx = canvas.getContext('2d');
+  const log = document.getElementById('log');
+  const modelSelect = document.getElementById('modelSelect');
 
   let session = null;
-  let stream = null;
-  let rafId = null;
-  let classes = [];
+  let lastImage = null;
 
-  function status(t){ statusEl.textContent = t }
+  async function logMsg(s){ log.innerText = s; }
 
-  // === Предобработка кадра ===
-  function preprocess(source) {
+  async function initORT() {
+    try {
+      // Configure wasm path if needed (CDN already предоставляет .wasm внутри библиотек)
+      // ort.env.wasm.wasmPaths = { "ort-wasm.wasm": "ort-wasm.wasm" }; //если локально
+
+      await logMsg('Инициализация ONNX Runtime (WASM)...');
+      // Примечание: createSession будет выполнен позже при выборе модели
+    } catch (e) {
+      console.error(e);
+      await logMsg('Ошибка инициализации ORT: ' + e.toString());
+    }
+  }
+
+  // Преобразуем изображение в input tensor (NCHW float32, normalized 0-1)
+  async function preprocessImageTo640(img) {
+    // letterbox: вписать в квадрат INPUT_SIZE, сохранить aspect
+    const w = img.width, h = img.height;
+    const scale = Math.min(INPUT_SIZE / w, INPUT_SIZE / h);
+    const nw = Math.round(w * scale);
+    const nh = Math.round(h * scale);
+    // prepare temp canvas
     const tmp = document.createElement('canvas');
-    tmp.width = MODEL_INPUT; tmp.height = MODEL_INPUT;
+    tmp.width = INPUT_SIZE; tmp.height = INPUT_SIZE;
     const tctx = tmp.getContext('2d');
-    const vw = source.videoWidth || source.width;
-    const vh = source.videoHeight || source.height;
-    const scale = Math.min(MODEL_INPUT / vw, MODEL_INPUT / vh);
-    const sw = vw * scale, sh = vh * scale;
-    const dx = (MODEL_INPUT - sw) / 2, dy = (MODEL_INPUT - sh) / 2;
-    tctx.fillStyle = "black";
-    tctx.fillRect(0, 0, MODEL_INPUT, MODEL_INPUT);
-    tctx.drawImage(source, 0, 0, vw, vh, dx, dy, sw, sh);
-
-    const img = tctx.getImageData(0, 0, MODEL_INPUT, MODEL_INPUT);
-    const input = new Float32Array(3 * MODEL_INPUT * MODEL_INPUT);
-    for (let i = 0; i < MODEL_INPUT * MODEL_INPUT; i++) {
-      input[i] = img.data[i * 4] / 255;
-      input[i + MODEL_INPUT * MODEL_INPUT] = img.data[i * 4 + 1] / 255;
-      input[i + 2 * MODEL_INPUT * MODEL_INPUT] = img.data[i * 4 + 2] / 255;
-    }
-    return new ort.Tensor('float32', input, [1, 3, MODEL_INPUT, MODEL_INPUT]);
-  }
-
-  function sigmoid(x){ return 1 / (1 + Math.exp(-x)); }
-  function iou(a,b){
-    const x1=Math.max(a.x1,b.x1),y1=Math.max(a.y1,b.y1),
-          x2=Math.min(a.x2,b.x2),y2=Math.min(a.y2,b.y2);
-    const w=Math.max(0,x2-x1),h=Math.max(0,y2-y1);
-    const inter=w*h,areaA=(a.x2-a.x1)*(a.y2-a.y1),areaB=(b.x2-b.x1)*(b.y2-b.y1);
-    return inter/(areaA+areaB-inter+1e-6);
-  }
-  function nms(boxes,scores,t=0.45){
-    const idxs=scores.map((s,i)=>({s,i})).sort((a,b)=>b.s-a.s).map(x=>x.i);
-    const keep=[];
-    while(idxs.length){
-      const i=idxs.shift();
-      keep.push(i);
-      for(let j=idxs.length-1;j>=0;j--){
-        if(iou(boxes[i],boxes[idxs[j]])>t) idxs.splice(j,1);
+    // fill black
+    tctx.fillStyle = 'black'; tctx.fillRect(0,0,INPUT_SIZE,INPUT_SIZE);
+    // draw centered
+    const dx = Math.floor((INPUT_SIZE - nw) / 2);
+    const dy = Math.floor((INPUT_SIZE - nh) / 2);
+    tctx.drawImage(img, 0,0,w,h, dx,dy, nw,nh);
+    const imageData = tctx.getImageData(0,0,INPUT_SIZE,INPUT_SIZE).data;
+    // NCHW
+    const float32 = new Float32Array(1 * 3 * INPUT_SIZE * INPUT_SIZE);
+    // normalize 0..1
+    for (let y=0;y<INPUT_SIZE;y++){
+      for (let x=0;x<INPUT_SIZE;x++){
+        const i = (y*INPUT_SIZE + x) * 4;
+        const r = imageData[i] / 255.0;
+        const g = imageData[i+1] / 255.0;
+        const b = imageData[i+2] / 255.0;
+        const idx = y*INPUT_SIZE + x;
+        float32[idx] = r; // R
+        float32[INPUT_SIZE*INPUT_SIZE + idx] = g; // G
+        float32[2*INPUT_SIZE*INPUT_SIZE + idx] = b; // B
       }
     }
-    return keep;
+    // Return tensor info and padding offsets to map back
+    return {
+      tensor: new ort.Tensor('float32', float32, [1,3,INPUT_SIZE,INPUT_SIZE]),
+      resizeInfo: { dx, dy, nw, nh, origW: img.width, origH: img.height, scale }
+    };
   }
 
-  function buildMask(proto, coeffs, mask_h, mask_w) {
-    const mask = new Float32Array(mask_h * mask_w);
-    for (let i=0; i<coeffs.length; i++){
-      const ch=proto.slice(i*mask_h*mask_w, (i+1)*mask_h*mask_w);
-      for(let j=0;j<mask.length;j++) mask[j]+=ch[j]*coeffs[i];
-    }
-    for(let i=0;i<mask.length;i++) mask[i]=sigmoid(mask[i]);
-    return mask;
-  }
-
-  function drawMask(mask, mask_h, mask_w, box, color){
-    const img=ctx.createImageData(mask_w,mask_h);
-    for(let i=0;i<mask.length;i++){
-      const v=mask[i]>0.5?255:0;
-      img.data[i*4]=color[0];
-      img.data[i*4+1]=color[1];
-      img.data[i*4+2]=color[2];
-      img.data[i*4+3]=v;
-    }
-    const m=document.createElement('canvas');
-    m.width=mask_w; m.height=mask_h;
-    const mctx=m.getContext('2d');
-    mctx.putImageData(img,0,0);
-    ctx.globalAlpha=0.4;
-    ctx.drawImage(m,box.x1,box.y1,box.x2-box.x1,box.y2-box.y1);
-    ctx.globalAlpha=1;
-  }
-
-  async function runInference(source){
-    const tensor=preprocess(source);
-    const feeds={[session.inputNames[0]]:tensor};
-    const out=await session.run(feeds);
-    const detOut=out[session.outputNames[0]];
-    const protoOut=out[session.outputNames[1]];
-    const data=detOut.data;
-    const [_,num,dim]=detOut.dims;
-    const mask_dim=protoOut.dims[1],mask_h=protoOut.dims[2],mask_w=protoOut.dims[3];
-    const boxes=[],scores=[],clsIdx=[],coeffsAll=[];
-    for(let i=0;i<num;i++){
-      const off=i*dim;
-      const cx=data[off],cy=data[off+1],w=data[off+2],h=data[off+3];
-      const conf=data[off+4];
-      let best=-1,score=0;
-      for(let c=5;c<dim-mask_dim;c++){
-        if(data[off+c]>score){score=data[off+c];best=c-5;}
+  // Простая реализация NMS (по классам)
+  function nms(boxes, scores, iouThreshold) {
+    const picked = [];
+    const idxs = scores.map((s,i)=>i).sort((a,b)=>scores[b]-scores[a]);
+    while (idxs.length>0) {
+      const i = idxs.shift();
+      picked.push(i);
+      const rem = [];
+      for (const j of idxs) {
+        const b1 = boxes[i], b2 = boxes[j];
+        const inter = Math.max(0, Math.min(b1[2],b2[2]) - Math.max(b1[0],b2[0])) *
+                      Math.max(0, Math.min(b1[3],b2[3]) - Math.max(b1[1],b2[1]));
+        const area1 = (b1[2]-b1[0])*(b1[3]-b1[1]);
+        const area2 = (b2[2]-b2[0])*(b2[3]-b2[1]);
+        const iou = inter / (area1 + area2 - inter + 1e-8);
+        if (iou <= iouThreshold) rem.push(j);
       }
-      const final=conf*score;
-      if(final<0.4) continue;
-      boxes.push({x1:(cx-w/2)*overlay.width,y1:(cy-h/2)*overlay.height,
-                  x2:(cx+w/2)*overlay.width,y2:(cy+h/2)*overlay.height});
-      scores.push(final);
-      clsIdx.push(best);
-      coeffsAll.push(data.slice(off+dim-mask_dim,off+dim));
+      idxs.splice(0, idxs.length, ...rem);
     }
-    const keep=nms(boxes,scores);
-    ctx.clearRect(0,0,overlay.width,overlay.height);
-    for(const i of keep){
-      const b=boxes[i];
-      ctx.strokeStyle='lime';ctx.lineWidth=2;ctx.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1);
-      const mask=buildMask(protoOut.data,coeffsAll[i],mask_h,mask_w);
-      drawMask(mask,mask_h,mask_w,b,[0,255,0]);
-      const label=`${classes[clsIdx[i]]||clsIdx[i]} ${(scores[i]*100).toFixed(1)}%`;
-      ctx.fillStyle='rgba(0,0,0,0.6)';
-      ctx.fillRect(b.x1,b.y1-20,ctx.measureText(label).width+6,20);
-      ctx.fillStyle='#fff';
-      ctx.fillText(label,b.x1+3,b.y1-7);
+    return picked;
+  }
+
+  // Парсер вывода ONNX для YOLO11-seg (примерно по структуре: output0 - detections, output1 - mask_proto)
+  // ВАЖНО: имена/форма выходов у вашей модели могут быть иными — проверьте и подгоните.
+  function parseYolo11SegOutputs(results, resizeInfo) {
+    // Предполагаем:
+    // results содержит: detections (например "output0") — float32 array [num_preds, 85+?] (x,y,w,h,obj,cls_scores..., mask_coeffs...)
+    // и mask prototype "output1" — [proto_channels, proto_h, proto_w]
+    // Это стандартный multi-task вывод у некоторых экспортов YOLO.
+    const outNames = Object.keys(results);
+    // Попробуем угадать: detections = первый тензор с 2D, maskProto = второй тензор
+    let detName = outNames[0], protoName = outNames[1];
+    if (results[outNames[0]].dims.length === 3 && results[outNames[1]].dims.length===2) {
+      // если путаются — поменяем
+      protoName = outNames[0];
+      detName = outNames[1];
+    }
+    // В реальных моделях их имена могут быть разными; подгоняйте здесь при необходимости
+    const det = results[detName]; // Tensor
+    const proto = results[protoName];
+
+    // Получаем массив
+    const detArr = Array.from(det.data);
+    const detDims = det.dims; // e.g. [1, num_preds, something] или [num_preds, something]
+    // Установим форму: если [1, N, C] -> reshape to [N, C]
+    let N,C;
+    let detList = [];
+    if (detDims.length===3) {
+      N = detDims[1]; C = detDims[2];
+      for (let i=0;i<N;i++){
+        detList.push(detArr.slice(i*C, (i+1)*C));
+      }
+    } else if (detDims.length===2) {
+      N = detDims[0]; C = detDims[1];
+      for (let i=0;i<N;i++){
+        detList.push(detArr.slice(i*C, (i+1)*C));
+      }
+    } else {
+      throw new Error('Неизвестная форма выхода detections: ' + JSON.stringify(detDims));
+    }
+
+    // mask prototype
+    const protoArr = Array.from(proto.data);
+    const protoDims = proto.dims; // e.g. [C_proto, H, W] or [H*W, C_proto] — будем поддерживать [C,H,W]
+    let protoC, protoH, protoW;
+    if (protoDims.length===3) { protoC=protoDims[0]; protoH=protoDims[1]; protoW=protoDims[2]; }
+    else if (protoDims.length===2) { // maybe [H*W, C]
+      protoH = protoDims[0]; protoW = protoDims[1]; protoC = 1;
+    } else {
+      // как fallback — попытаемся угадать
+      protoC = protoDims[0]; protoH =  protoDims[1]||1; protoW = protoDims[2]||1;
+    }
+
+    // Парсинг перебора предсказаний: структура может быть [cx,cy,w,h, obj_conf, cls_probs..., mask_coeffs...]
+    // Нужно определить где классы заканчиваются и где mask_coeffs начинаются. Это зависит от модели.
+    // Для универсальности: множество экспортов отдает [cx,cy,w,h, obj, cls0..clsK-1, mask_coefs(L)]
+    // Определим numClasses как CLASSES.length
+    const numClasses = CLASSES.length;
+    // длина маски коэффов = C - (4 + 1 + numClasses)
+    const maskCoefLen = C - (4 + 1 + numClasses);
+    const detections = [];
+
+    for (const row of detList) {
+      const cx = row[0], cy = row[1], w = row[2], h = row[3];
+      const obj = 1/(1+Math.exp(-row[4])); // sigmoid
+      // classes
+      const clsScores = [];
+      for (let k=0;k<numClasses;k++){
+        clsScores.push(1/(1+Math.exp(-row[5+k])));
+      }
+      // get best class
+      let bestClass = 0, bestScore = clsScores[0];
+      for (let k=1;k<numClasses;k++){ if (clsScores[k] > bestScore){ bestScore = clsScores[k]; bestClass = k; } }
+      const score = obj * bestScore;
+      if (score < SCORE_THRESH) continue;
+
+      // mask coefs
+      const maskCoefs = row.slice(5 + numClasses, 5 + numClasses + maskCoefLen);
+
+      // top-left / bottom-right in normalized coords relative to padded 640 input
+      const x1 = cx - w/2, y1 = cy - h/2, x2 = cx + w/2, y2 = cy + h/2;
+      detections.push({box:[x1,y1,x2,y2], score, classId: bestClass, maskCoefs});
+    }
+
+    // group by class and NMS
+    const finalDetections = [];
+    for (let c=0;c<numClasses;c++){
+      const inds = detections.map((d,i) => d.classId===c ? i : -1).filter(i=>i>=0);
+      if (inds.length===0) continue;
+      const boxes = inds.map(i=>detections[i].box.map(v=>v)); // normalized
+      const scores = inds.map(i=>detections[i].score);
+      // convert to image coords (relative to padded INPUT_SIZE)
+      const boxesPx = boxes.map(b=>{
+        return [
+          b[0]*INPUT_SIZE, b[1]*INPUT_SIZE, b[2]*INPUT_SIZE, b[3]*INPUT_SIZE
+        ];
+      });
+      const keep = nms(boxesPx, scores, NMS_IOU);
+      for (const k of keep) {
+        const idx = inds[k];
+        finalDetections.push({ ...detections[idx], boxPx: boxesPx[k] });
+      }
+    }
+
+    return { detections: finalDetections, proto: { data: protoArr, dims: protoDims } , resizeInfo };
+  }
+
+  // Декодирование маски: mask = sigmoid(proto_channels,H*W dot mask_coefs) -> reshape -> resize к оригиналу
+  // Простая реализация: вычисляем per-pixel mask на proto_h x proto_w и масштабируем.
+  function decodeMask(proto, maskCoefs, protoDims, resizeInfo) {
+    // proto: array length protoC*protoH*protoW
+    // maskCoefs: length protoC
+    const protoC = protoDims[0], protoH = protoDims[1], protoW = protoDims[2];
+    // dot product per pixel: for each pixel p: v = sum_c proto[c,p]*coef[c]
+    const pxCount = protoH*protoW;
+    const mask = new Float32Array(pxCount);
+    for (let c=0;c<protoC;c++){
+      const coef = maskCoefs[c] || 0;
+      const base = c * pxCount;
+      for (let i=0;i<pxCount;i++){
+        mask[i] += proto[base + i] * coef;
+      }
+    }
+    // apply sigmoid
+    for (let i=0;i<pxCount;i++) mask[i] = 1/(1+Math.exp(-mask[i]));
+    // turn into image canvas for later scaling
+    // create temporary canvas
+    const tmp = document.createElement('canvas');
+    tmp.width = protoW; tmp.height = protoH;
+    const tctx = tmp.getContext('2d');
+    const imgData = tctx.createImageData(protoW, protoH);
+    for (let i=0;i<pxCount;i++){
+      const v = Math.round(mask[i]*255);
+      imgData.data[i*4+0] = v;
+      imgData.data[i*4+1] = v;
+      imgData.data[i*4+2] = v;
+      imgData.data[i*4+3] = v; // alpha
+    }
+    tctx.putImageData(imgData, 0,0);
+    // Resize mask to INPUT_SIZE (padded) and return ImageData
+    const scaled = document.createElement('canvas');
+    scaled.width = INPUT_SIZE; scaled.height = INPUT_SIZE;
+    const sctx = scaled.getContext('2d');
+    sctx.drawImage(tmp, 0,0, protoW, protoH, 0,0, INPUT_SIZE, INPUT_SIZE);
+    return sctx.getImageData(0,0,INPUT_SIZE,INPUT_SIZE);
+  }
+
+  // Отрисовка результатов
+  function drawResults(detections, proto, protoDims, resizeInfo) {
+    // Clear canvas and draw original image scaled to fit canvas
+    const dispW = Math.min(800, resizeInfo.origW);
+    const scaleToCanvas = (v) => v; // We'll set canvas to original image displayed size
+    canvas.width = resizeInfo.origW;
+    canvas.height = resizeInfo.origH;
+    // draw original image at full size
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(lastImage, 0,0, canvas.width, canvas.height);
+
+    // For each detection draw mask and box
+    detections.forEach((d,i) => {
+      // decode mask
+      const maskImg = decodeMask(proto.data, d.maskCoefs, protoDims, resizeInfo);
+      // maskImg has size INPUT_SIZE x INPUT_SIZE; our padding dx,dy indicate where original image sits inside
+      const { dx, dy, nw, nh, origW, origH, scale } = resizeInfo;
+      // create temporary canvas to crop mask to bbox and then draw scaled onto displayed canvas
+      // We'll composite mask on top with color
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = INPUT_SIZE; maskCanvas.height = INPUT_SIZE;
+      const mctx = maskCanvas.getContext('2d');
+      mctx.putImageData(maskImg, 0,0);
+      // globalCompositeOperation to produce colored mask
+      const maskData = mctx.getImageData(0,0,INPUT_SIZE,INPUT_SIZE);
+
+      // draw mask onto main canvas with transform: first compute where the padded 640 area maps on display image
+      const sx = dx, sy = dy, sw = nw, sh = nh;
+      const dxOnDisp = 0, dyOnDisp = 0, dwOnDisp = origW, dhOnDisp = origH;
+      // Create an offscreen canvas containing mask scaled to original image size
+      const off = document.createElement('canvas');
+      off.width = origW; off.height = origH;
+      const offCtx = off.getContext('2d');
+      // draw maskCanvas cropped to the padded region but scaled to origW x origH
+      offCtx.drawImage(maskCanvas, sx, sy, sw, sh, 0,0, dwOnDisp, dhOnDisp);
+      // get image data and draw colored overlay
+      const offData = offCtx.getImageData(0,0,off.width, off.height);
+      // overlay with semi-transparent color
+      const color = (d.classId*47*13) % 360; // hue
+      // draw polygon style: fill pixels where alpha>threshold
+      const alphaThreshold = 64;
+      ctx.save();
+      // create image from mask and tint it
+      const tint = document.createElement('canvas');
+      tint.width = off.width; tint.height = off.height;
+      const tctx2 = tint.getContext('2d');
+      const timg = tctx2.createImageData(off.width, off.height);
+      for (let p=0;p<offData.data.length/4;p++){
+        const a = offData.data[p*4]; // grayscale mask
+        if (a > alphaThreshold) {
+          // colorize pixel with HSLA -> convert approx: use H to RGB via canvas
+          timg.data[p*4+0] = 255; // temporary white, we'll composite with globalComposite
+          timg.data[p*4+1] = 255;
+          timg.data[p*4+2] = 255;
+          timg.data[p*4+3] = Math.min(200, Math.round((a/255)*180)); // alpha
+        } else {
+          timg.data[p*4+3] = 0;
+        }
+      }
+      tctx2.putImageData(timg,0,0);
+      // tint using globalComposite
+      tctx2.globalCompositeOperation = 'source-in';
+      tctx2.fillStyle = `hsla(${color} 80% 50% / 0.45)`;
+      tctx2.fillRect(0,0, tint.width, tint.height);
+      // draw tinted mask onto main canvas
+      ctx.drawImage(tint, 0,0);
+      ctx.restore();
+
+      // draw bounding box (map boxPx [x1,y1,x2,y2] defined relative to padded 640 to orig image)
+      // Map boxPx (in padded 640 coords) -> crop region on padded area -> scale to original image size.
+      const [bx1,by1,bx2,by2] = d.boxPx; // relative to padded INPUT_SIZE
+      // relative inside padded region: subtract dx,dy then scale to original image size
+      const rx1 = Math.max(0, (bx1 - resizeInfo.dx) / resizeInfo.nw * resizeInfo.origW);
+      const ry1 = Math.max(0, (by1 - resizeInfo.dy) / resizeInfo.nh * resizeInfo.origH);
+      const rx2 = Math.min(resizeInfo.origW, (bx2 - resizeInfo.dx) / resizeInfo.nw * resizeInfo.origW);
+      const ry2 = Math.min(resizeInfo.origH, (by2 - resizeInfo.dy) / resizeInfo.nh * resizeInfo.origH);
+
+      ctx.strokeStyle = `hsl(${(d.classId*47)%360} 80% 40%)`;
+      ctx.lineWidth = Math.max(2, Math.round(Math.min(canvas.width, canvas.height)/250));
+      ctx.strokeRect(rx1, ry1, rx2-rx1, ry2-ry1);
+      ctx.font = `${14}px sans-serif`;
+      ctx.fillStyle = 'white';
+      ctx.fillRect(rx1, ry1-18, ctx.measureText(CLASSES[d.classId] + ' ' + d.score.toFixed(2)).width+8, 18);
+      ctx.fillStyle = 'black';
+      ctx.fillText(`${CLASSES[d.classId]} ${d.score.toFixed(2)}`, rx1+4, ry1-4);
+    });
+  }
+
+  async function runInference(file) {
+    if (!session) {
+      await logMsg('Сначала загрузите модель (нажмите "Загрузка модели...")');
+      return;
+    }
+    const img = await createImageBitmap(file);
+    lastImage = img;
+    // preprocess
+    const pp = await preprocessImageTo640(img);
+    await logMsg('Выполняется инференс (WASM)...');
+    const feeds = {};
+    // many YOLO ONNX экспорты ожидают имя входа 'images' или 'images'/'input' — подгоните, если нужно
+    // Попробуем выбрать имя первого входа
+    const inputName = session.inputNames && session.inputNames.length>0 ? session.inputNames[0] : 'images';
+    feeds[inputName] = pp.tensor;
+    try {
+      const results = await session.run(feeds);
+      await logMsg('Парсинг результатов...');
+      const parsed = parseYolo11SegOutputs(results, pp.resizeInfo);
+      drawResults(parsed.detections, parsed.proto, parsed.proto.dims, parsed.resizeInfo);
+      await logMsg(`Найдено ${parsed.detections.length} объектов (score>${SCORE_THRESH})`);
+    } catch (e) {
+      console.error('Inference error', e);
+      await logMsg('Ошибка инференса: ' + e.toString());
     }
   }
 
-  async function inferLoop(){
-    if(!video||video.readyState<2){rafId=requestAnimationFrame(inferLoop);return;}
-    await runInference(video);
-    rafId=requestAnimationFrame(inferLoop);
+  // Удобная загрузка модели
+  async function loadModel(modelFilename) {
+    try {
+      statusEl.innerText = 'Загрузка модели ('+modelFilename+')...';
+      // force wasm backend
+      const opts = { executionProviders: ['wasm'] };
+      // create session
+      session = await ort.InferenceSession.create(modelFilename, opts);
+      statusEl.innerText = 'Модель загружена: ' + modelFilename;
+      runBtn.disabled = false;
+      await logMsg('Модель готова. Загрузите изображение и нажмите "Запустить".');
+    } catch (e) {
+      console.error('Model load error', e);
+      statusEl.innerText = 'Ошибка загрузки модели';
+      await logMsg('Ошибка загрузки модели: ' + e.toString());
+    }
   }
 
-  async function startCamera(){
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
-    video.srcObject=stream;
-    video.style.display='block';
-    await video.play();
-    overlay.width=video.videoWidth;
-    overlay.height=video.videoHeight;
-    startCam.disabled=true;
-    stopBtn.disabled=false;
-    status('Камера запущена');
-    rafId=requestAnimationFrame(inferLoop);
-  }
+  // init
+  (async ()=>{
+    await initORT();
+    // загрузим модель по умолчанию (можно выбирать)
+    const initial = MODEL_FILENAME_DEFAULT;
+    await loadModel(initial);
+  })();
 
-  function stopAll(){
-    if(stream)stream.getTracks().forEach(t=>t.stop());
-    if(rafId)cancelAnimationFrame(rafId);
-    startCam.disabled=false;
-    stopBtn.disabled=true;
-    status('Остановлено');
-  }
+  // UI handlers
+  fileInput.addEventListener('change', ()=> {
+    runBtn.disabled = !fileInput.files || fileInput.files.length===0;
+  });
 
-  async function handleFile(e){
-    const file=e.target.files[0];
-    if(!file)return;
-    stopAll();
-    const url=URL.createObjectURL(file);
-    const isVideo=file.type.startsWith('video');
-    status('Обработка...');
-    if(isVideo){
-      const v=document.createElement('video');
-      v.src=url;
-      await v.play();
-      overlay.width=v.videoWidth;
-      overlay.height=v.videoHeight;
-      await runInference(v);
+  runBtn.addEventListener('click', async ()=>{
+    const f = fileInput.files[0];
+    if (!f) return;
+    await runInference(f);
+  });
+
+  modelSelect.addEventListener('change', async (e)=>{
+    runBtn.disabled = true;
+    await loadModel(e.target.value);
+  });
+
+  </script>
+</body>
+</html>
