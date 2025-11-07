@@ -1,0 +1,33 @@
+{
+  "name": "ar_wheels",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "webpack serve --mode development",
+    "build": "webpack --mode production"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nnovofastovskiy/ar_wheels.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/nnovofastovskiy/ar_wheels/issues"
+  },
+  "homepage": "https://github.com/nnovofastovskiy/ar_wheels#readme",
+  "devDependencies": {
+    "html-webpack-plugin": "^5.6.4",
+    "ts-loader": "^9.5.4",
+    "typescript": "^5.9.3",
+    "webpack": "^5.102.1",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.2"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.23.2"
+  }
+}
