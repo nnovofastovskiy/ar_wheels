@@ -1,5 +1,5 @@
 import * as ort from 'onnxruntime-web';
-const timerEl = document.getElementById('timer') as HTMLSpanElement;
+const timerEl = document.getElementById('timer') as HTMLHeadingElement;
 const startTime = new Date();
 timerEl.innerText = `Start in ${startTime.getHours()}:${startTime.getMinutes()}:${startTime.getSeconds()}:${startTime.getMilliseconds()}`;
 // === Загрузить метки ===
