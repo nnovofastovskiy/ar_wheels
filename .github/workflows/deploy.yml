@@ -3,7 +3,7 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches:
-      - main  # запускаем при пуше в основную ветку
+      - main  # запуск при каждом пуше в основную ветку
 
 permissions:
   contents: read
@@ -19,21 +19,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: 🧩 Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: ⚙️ Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: npm ci
 
-      - name: Build project
+      - name: 🏗️ Build project
         run: npm run build
 
-      - name: Upload dist to GitHub Pages artifact
+      - name: 🖼️ Copy public assets
+        run: |
+          mkdir -p dist
+          cp -r public/* dist/ || true
+
+      - name: 📤 Upload artifact for deployment
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
@@ -46,6 +51,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Deploy to GitHub Pages
+      - name: 🚀 Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
