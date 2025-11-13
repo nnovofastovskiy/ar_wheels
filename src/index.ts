@@ -1,5 +1,7 @@
 import * as ort from 'onnxruntime-web';
-
+const timerEl = document.getElementById('timer') as HTMLSpanElement;
+const startTime = new Date();
+timerEl.innerText = `Start in ${startTime.getHours()}:${startTime.getMinutes()}:${startTime.getSeconds()}:${startTime.getMilliseconds()}`;
 // === Загрузить метки ===
 const labels: string[] = await fetch('./models/labels.json').then(r => r.json());
 
@@ -11,7 +13,6 @@ const inputSize = 640;
 const session = await ort.InferenceSession.create(modelPath, {
     executionProviders: ['wasm'],
 });
-
 const canvas = document.getElementById('outCanvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
 
@@ -141,3 +142,7 @@ function drawResults(
         ctx.fillText(text, x1 + 3, y1 - 5);
     }
 }
+
+
+const endTime = new Date();
+timerEl.innerText += `\nEnds in ${endTime.getHours()}:${endTime.getMinutes()}:${endTime.getSeconds()}:${endTime.getMilliseconds()}\nTotal time: ${endTime.getTime() - startTime.getTime()} ms   `;
