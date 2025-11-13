@@ -14,7 +14,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/nnovofastovskiy/ar_wheels/issues"
   },
@@ -28,6 +28,7 @@
     "webpack-dev-server": "^5.2.2"
   },
   "dependencies": {
-    "onnxruntime-web": "^1.23.2"
+    "onnxruntime-web": "^1.23.2",
+    "@techstark/opencv-js": "4.5.5-release.2"
   }
 }
